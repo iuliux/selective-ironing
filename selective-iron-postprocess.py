@@ -25,13 +25,14 @@ Requirements: Python 3.6+, no external dependencies.
 import sys
 import re
 import os
+from typing import Optional, List
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def parse_z(line: str) -> float | None:
+def parse_z(line: str) -> Optional[float]:
     """Return the Z value from a G1 Z... line, or None if not present."""
     m = re.search(r'G1\s+Z([0-9.]+)', line)
     return float(m.group(1)) if m else None
@@ -178,7 +179,7 @@ def process(filepath: str) -> None:
     # We subtract layer_height from all of them so they now address the
     # layer below.
     # ------------------------------------------------------------------
-    def shift_z_in_block(block: list[str]) -> list[str]:
+    def shift_z_in_block(block: List[str]) -> List[str]:
         result = []
         for line in block:
             z_val = parse_z(line)
