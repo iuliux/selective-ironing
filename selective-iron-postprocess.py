@@ -263,8 +263,11 @@ def process(filepath):
     # ------------------------------------------------------------------
     first_entry_start = ironing_blocks[0][0]
 
+    # Header = everything up to and including ;AFTER_LAYER_CHANGE.
+    # Everything after that (perimeters, infill, color changes) is layer
+    # geometry we are replacing wholesale with ironing-only passes.
     header_lines = []
-    for line in last_layer[:first_entry_start]:
+    for line in last_layer:
         stripped = line.strip()
         z_val = parse_z(line)
         if z_val is not None:
@@ -272,6 +275,8 @@ def process(filepath):
         if stripped.startswith(';Z:'):
             line = ';Z:{}\n'.format(format_z(target_z))
         header_lines.append(line)
+        if stripped == ';AFTER_LAYER_CHANGE':
+            break
 
     footer_lines = []
     in_footer = False
