@@ -30,6 +30,12 @@ import sys
 import re
 import os
 
+# How far above the target surface the nozzle irons.
+# PrusaSlicer uses 0.005 mm for its own ironing; Reddit recommends ~0.05 mm
+# to avoid the nozzle gouging the surface when ironing a layer below.
+# Tune this if you get raised edges (increase) or no effect (decrease).
+IRON_Z_OFFSET = 0.05
+
 
 def parse_z(line):
     """Return the Z value from a G1 Z... move, or None."""
@@ -118,11 +124,11 @@ def process(filepath):
         print('[selective_iron] ERROR: Could not determine layer height. Aborting.')
         sys.exit(1)
 
-    target_z = round(last_layer_z - layer_height, 4)
+    target_z = round(last_layer_z - layer_height + IRON_Z_OFFSET, 4)
 
     print('[selective_iron] Last layer Z:  {} mm'.format(last_layer_z))
     print('[selective_iron] Layer height:   {} mm'.format(layer_height))
-    print('[selective_iron] Ironing Z:      {} mm'.format(target_z))
+    print('[selective_iron] Ironing Z:      {} mm (surface + {} mm offset)'.format(target_z, IRON_Z_OFFSET))
 
     # ------------------------------------------------------------------
     # Step 3: Read retraction settings from the config footer.
