@@ -33,7 +33,7 @@ import os
 # How far above the target surface the nozzle irons.
 # PrusaSlicer uses 0.005 mm for its own ironing. Increase if you get raised
 # edges, decrease if the ironing has no visible smoothing effect.
-IRON_Z_OFFSET = 0.05
+IRON_Z_OFFSET = 0.12
 
 # Marker written into the output so we can detect double-processing.
 PROCESSED_MARKER = '; selective_iron: processed'
