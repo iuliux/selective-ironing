@@ -15,8 +15,8 @@ The script will:
   - Refuse to run on already-processed files (checks for ; selective_iron marker).
   - Find the last layer and detect its Z height and layer height automatically.
   - Read retraction settings from the G-code config footer.
-  - Extract all ;TYPE:Ironing blocks from that layer, including the
-    pre-block positioning travel (retract/lift/travel/lower/prime).
+  - Extract all ;TYPE:Ironing blocks from that layer (ironing moves only).
+  - Generate a clean standardized entry travel for each block.
   - Lower all ironing Z moves to target_z (surface + IRON_Z_OFFSET).
   - Convert flat inter-line hops inside ironing passes into proper
     retract + lift + travel + lower + prime sequences.
@@ -62,6 +62,15 @@ def parse_config_value(lines, key):
         m = pattern.match(line.strip())
         if m:
             return float(m.group(1))
+    return None
+
+
+def extract_xy(line):
+    """Extract X and Y values from a G1 move, or return None."""
+    xm = re.search(r'\bX([0-9.]+)', line)
+    ym = re.search(r'\bY([0-9.]+)', line)
+    if xm and ym:
+        return xm.group(1), ym.group(1)
     return None
 
 
@@ -128,18 +137,13 @@ def process(filepath):
         print('[selective_iron] ERROR: Could not determine layer height. Aborting.')
         sys.exit(1)
 
-    # The surface we want to iron is one layer below.
     surface_z = round(last_layer_z - layer_height, 4)
-    # The nozzle irons slightly above the surface.
     target_z  = round(surface_z + IRON_Z_OFFSET, 4)
-    # Travel lifts go above last_layer_z to clear the silhouette layer.
-    lift_z    = round(last_layer_z + 0.2, 4)   # same margin as retract_lift
 
     print('[selective_iron] Last layer Z:  {} mm'.format(last_layer_z))
     print('[selective_iron] Layer height:   {} mm'.format(layer_height))
     print('[selective_iron] Surface Z:      {} mm'.format(surface_z))
     print('[selective_iron] Ironing Z:      {} mm (+{} mm offset)'.format(target_z, IRON_Z_OFFSET))
-    print('[selective_iron] Travel lift Z:  {} mm'.format(lift_z))
 
     # ------------------------------------------------------------------
     # Step 3: Read retraction settings from the config footer.
@@ -149,7 +153,6 @@ def process(filepath):
     deretract_speed = parse_config_value(lines, 'deretract_speed') or retract_speed
     retract_lift    = parse_config_value(lines, 'retract_lift')    or 0.2
 
-    # Recalculate lift_z using the actual retract_lift from the config
     lift_z = round(last_layer_z + retract_lift, 4)
 
     retract_feedrate   = int(retract_speed * 60)
@@ -159,57 +162,35 @@ def process(filepath):
     print('[selective_iron] Travel lift Z:  {} mm'.format(lift_z))
 
     # ------------------------------------------------------------------
-    # Step 4: Extract ironing blocks with their entry travel.
+    # Step 4: Extract ironing blocks (moves only, no entry travel).
     #
-    # PrusaSlicer emits this before each ;TYPE:Ironing block:
-    #   [wipe end]
-    #   G1 Z<lift>               (lift)
-    #   G1 X.. Y.. F10800        (travel to region start)
-    #   G1 Z<layer_z>            (lower to layer Z)
-    #   G1 E1.6 F1500            (prime)
-    #   ;TYPE:Ironing
-    #
-    # We look back from ;TYPE:Ironing to capture the entry, stopping at
-    # ;WIPE_END which is the definitive boundary before it.
+    # We collect only the lines between ;TYPE:Ironing and the next ;TYPE:
+    # The entry travel is NOT captured here — we generate it ourselves in
+    # Step 5 so it's consistent regardless of what PrusaSlicer emitted.
     # ------------------------------------------------------------------
-    def find_entry_start(layer_lines, type_ironing_idx):
-        i = type_ironing_idx - 1
-        while i >= 0:
-            s = layer_lines[i].strip()
-            if (s == ';WIPE_END' or
-                    s.startswith(';TYPE:') or
-                    s.startswith(';AFTER_LAYER_CHANGE')):
-                return i + 1
-            i -= 1
-        return 0
-
-    ironing_blocks = []
+    ironing_blocks = []   # list of raw move lines for each block
     in_ironing = False
     current_block = []
-    block_entry_start = None
 
-    for idx, line in enumerate(last_layer):
+    for line in last_layer:
         stripped = line.strip()
 
         if stripped == ';TYPE:Ironing':
-            entry_start = find_entry_start(last_layer, idx)
             in_ironing = True
-            current_block = list(last_layer[entry_start:idx]) + [line]
-            block_entry_start = entry_start
+            current_block = [line]
             continue
 
         if stripped.startswith(';TYPE:') and in_ironing:
-            ironing_blocks.append((block_entry_start, current_block))
+            ironing_blocks.append(current_block)
             current_block = []
             in_ironing = False
-            block_entry_start = None
             continue
 
         if in_ironing:
             current_block.append(line)
 
     if in_ironing and current_block:
-        ironing_blocks.append((block_entry_start, current_block))
+        ironing_blocks.append(current_block)
 
     if not ironing_blocks:
         print('[selective_iron] ERROR: No ;TYPE:Ironing sections found in the last layer.')
@@ -221,17 +202,38 @@ def process(filepath):
     # ------------------------------------------------------------------
     # Step 5: Transform each ironing block.
     #
-    # Z strategy — instead of shifting relative to last_layer_z (fragile
-    # if the file has been partially processed), we set Z values explicitly:
-    #   - Any Z move at or below last_layer_z  →  target_z  (ironing contact)
-    #   - Any Z move above last_layer_z        →  lift_z    (travel clearance)
-    #
-    # Inter-line hops inside active ironing (after the first G1 F900,
-    # reset by wipe markers) are wrapped with retract/lift/travel/lower/prime.
+    # For each block:
+    #   a) Extract the XY start position from the first ironing move.
+    #   b) Prepend a standardized entry: retract → lift → travel → lower → prime.
+    #   c) Set all Z moves explicitly: working Z → target_z, lifts → lift_z.
+    #   d) Wrap inter-line hops (F>=3000, no E, inside active ironing) with
+    #      retract + lift + travel + lower + prime.
     # ------------------------------------------------------------------
+    def get_first_ironing_xy(block):
+        """Find XY of the first ironing move (first G1 with E after G1 F900)."""
+        past_f900 = False
+        for line in block:
+            s = line.strip()
+            if s == 'G1 F900' or s.startswith('G1 F900 '):
+                past_f900 = True
+                continue
+            if past_f900 and re.search(r'\bE', s) and re.search(r'\bX', s):
+                return extract_xy(s)
+        return None
+
     def transform_block(block):
         result = []
         in_active_ironing = False
+
+        # Generate standardized entry travel to the block's start position
+        xy = get_first_ironing_xy(block)
+        if xy:
+            x, y = xy
+            result.append('G1 E-{} F{} ; retract\n'.format(retract_length, retract_feedrate))
+            result.append('G1 Z{} F720 ; lift\n'.format(format_z(lift_z)))
+            result.append('G1 X{} Y{} F10800 ; travel to ironing start\n'.format(x, y))
+            result.append('G1 Z{} F720 ; lower\n'.format(format_z(target_z)))
+            result.append('G1 E{} F{} ; prime\n'.format(retract_length, deretract_feedrate))
 
         for line in block:
             stripped = line.strip()
@@ -247,19 +249,15 @@ def process(filepath):
                 result.append(line)
                 continue
 
-            # Z: set explicitly to target_z or lift_z
+            # Set Z explicitly
             z_val = parse_z(line)
             if z_val is not None:
-                if round(z_val, 4) <= round(last_layer_z, 4):
-                    new_z = target_z
-                else:
-                    new_z = lift_z
-                new_z_str = format_z(new_z)
-                line = re.sub(r'(G1\s+Z)[0-9.]+', 'G1 Z' + new_z_str, line)
+                new_z = target_z if round(z_val, 4) <= round(last_layer_z, 4) else lift_z
+                line = re.sub(r'(G1\s+Z)[0-9.]+', 'G1 Z' + format_z(new_z), line)
                 result.append(line)
                 continue
 
-            # Inter-line hop inside active ironing — wrap with retract/lift/travel/lower/prime
+            # Inter-line hop inside active ironing — wrap it
             if in_active_ironing and stripped.startswith('G1') and not re.search(r'\bE', stripped):
                 f_match = re.search(r'\bF([0-9.]+)', stripped)
                 if f_match and float(f_match.group(1)) >= 3000:
@@ -274,7 +272,7 @@ def process(filepath):
 
         return result
 
-    transformed_blocks = [transform_block(block) for _, block in ironing_blocks]
+    transformed_blocks = [transform_block(block) for block in ironing_blocks]
 
     # ------------------------------------------------------------------
     # Step 6: Build the replacement last layer.
@@ -287,21 +285,16 @@ def process(filepath):
     for line in last_layer:
         stripped = line.strip()
 
-        # Once past AFTER_LAYER_CHANGE, stop at the first TYPE marker
         if past_after_layer and stripped.startswith(';TYPE:'):
             break
 
-        # Update ;Z: comment to reflect new ironing Z
         if stripped.startswith(';Z:'):
             line = ';Z:{}\n'.format(format_z(target_z))
 
-        # Update any G1 Z moves in the header
         z_val = parse_z(line)
         if z_val is not None:
-            if round(z_val, 4) <= round(last_layer_z, 4):
-                line = re.sub(r'(G1\s+Z)[0-9.]+', 'G1 Z' + format_z(target_z), line)
-            else:
-                line = re.sub(r'(G1\s+Z)[0-9.]+', 'G1 Z' + format_z(lift_z), line)
+            new_z = target_z if round(z_val, 4) <= round(last_layer_z, 4) else lift_z
+            line = re.sub(r'(G1\s+Z)[0-9.]+', 'G1 Z' + format_z(new_z), line)
 
         header_lines.append(line)
 
@@ -324,14 +317,12 @@ def process(filepath):
 
     # ------------------------------------------------------------------
     # Step 7: Reassemble and write back in-place.
-    # Stamp the processed marker into the footer so double-runs are caught.
     # ------------------------------------------------------------------
     layers[-1] = new_last_layer
     output_lines = []
     for layer in layers:
         output_lines.extend(layer)
 
-    # Insert marker just before the prusaslicer_config block (or at end)
     marker_line = PROCESSED_MARKER + '\n'
     for i, line in enumerate(output_lines):
         if '; prusaslicer_config = begin' in line:
