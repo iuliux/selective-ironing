@@ -225,7 +225,9 @@ def process(filepath):
         result = []
         in_active_ironing = False
 
-        # Generate standardized entry travel to the block's start position
+        # Generate standardized entry travel to the block's start position.
+        # We skip the first move of the block itself if it's a zero-length iron
+        # at the same position (PrusaSlicer often emits one as an arrival marker).
         xy = get_first_ironing_xy(block)
         if xy:
             x, y = xy
@@ -234,7 +236,10 @@ def process(filepath):
             result.append('G1 X{} Y{} F10800 ; travel to ironing start\n'.format(x, y))
             result.append('G1 Z{} F720 ; lower\n'.format(format_z(target_z)))
             result.append('G1 E{} F{} ; prime\n'.format(retract_length, deretract_feedrate))
+        # Track the entry XY so we can skip the redundant zero-length first iron move
+        entry_xy = xy
 
+        first_move_done = False
         for line in block:
             stripped = line.strip()
 
@@ -243,6 +248,20 @@ def process(filepath):
                 in_active_ironing = True
                 result.append(line)
                 continue
+
+            # Skip the redundant zero-length first iron if it's at the entry position
+            if in_active_ironing and not first_move_done and entry_xy:
+                first_move_done = True
+                import re as _re
+                xm = _re.search(r'\bX([0-9.]+)', stripped)
+                ym = _re.search(r'\bY([0-9.]+)', stripped)
+                if (xm and ym and
+                        xm.group(1) == entry_xy[0] and
+                        ym.group(1) == entry_xy[1] and
+                        'E' in stripped):
+                    continue  # drop the redundant move
+            elif in_active_ironing:
+                first_move_done = True
 
             if stripped in (';WIPE_START', ';WIPE_END'):
                 in_active_ironing = False
