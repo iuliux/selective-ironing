@@ -19,6 +19,8 @@ Iron graphics on the top layer (3D printing post-processing script).
 ### In Your Model:
 Design your part with a 1-layer-tall extrusion on the topmost surface representing the graphics you want ironed.
 
+<img src="images/model-example.png" alt="Description" width="500">
+
 ### Slicing:
 Slice and print. Note that post-processing effects won't show in the slicer preview.
 
