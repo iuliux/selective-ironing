@@ -260,9 +260,18 @@ def process(filepath):
             elif in_active_ironing:
                 first_move_done = True
 
-            if stripped in (';WIPE_START', ';WIPE_END'):
+            if stripped == ';WIPE_START':
                 in_active_ironing = False
                 result.append(line)
+                continue
+
+            if stripped == ';WIPE_END':
+                in_active_ironing = False
+                result.append(line)
+                # After wipe, the nozzle is at surface level. Any travel before
+                # the next block will drag — so we lift immediately after wipe.
+                result.append('G1 E-{} F{} ; retract after wipe\n'.format(retract_length, retract_feedrate))
+                result.append('G1 Z{} F720 ; lift after wipe\n'.format(format_z(lift_z)))
                 continue
 
             # Set Z explicitly
