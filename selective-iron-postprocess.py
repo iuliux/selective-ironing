@@ -119,30 +119,27 @@ def process(filepath):
         print('[selective_iron] ERROR: Could not determine last layer Z. Aborting.')
         sys.exit(1)
 
-    layer_height = None
-    for line in last_layer:
-        m = re.match(r';HEIGHT:([0-9.]+)', line.strip())
-        if m:
-            layer_height = float(m.group(1))
-            break
-
-    if layer_height is None and len(layers) >= 2:
+    # Read surface_z directly from the previous layer's ;Z: comment.
+    # This is more reliable than computing last_layer_z - layer_height because
+    # it is immune to variable layer heights (VLH) producing unexpected values.
+    surface_z = None
+    if len(layers) >= 2:
         for line in layers[-2]:
             m = re.match(r';Z:([0-9.]+)', line.strip())
             if m:
-                layer_height = round(last_layer_z - float(m.group(1)), 4)
+                surface_z = float(m.group(1))
                 break
 
-    if layer_height is None:
-        print('[selective_iron] ERROR: Could not determine layer height. Aborting.')
+    if surface_z is None:
+        print('[selective_iron] ERROR: Could not determine surface Z from previous layer. Aborting.')
         sys.exit(1)
 
-    surface_z = round(last_layer_z - layer_height, 4)
-    target_z  = round(surface_z + IRON_Z_OFFSET, 4)
+    layer_height = round(last_layer_z - surface_z, 4)
+    target_z     = round(surface_z + IRON_Z_OFFSET, 4)
 
     print('[selective_iron] Last layer Z:  {} mm'.format(last_layer_z))
+    print('[selective_iron] Previous layer Z: {} mm (read directly from ;Z: comment)'.format(surface_z))
     print('[selective_iron] Layer height:   {} mm'.format(layer_height))
-    print('[selective_iron] Surface Z:      {} mm'.format(surface_z))
     print('[selective_iron] Ironing Z:      {} mm (+{} mm offset)'.format(target_z, IRON_Z_OFFSET))
 
     # ------------------------------------------------------------------
