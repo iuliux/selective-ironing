@@ -12,14 +12,14 @@ Iron graphics on the top layer (3D printing post-processing script).
 
 ## Setup Instructions
 
-### In PrusaSlicer:
-1. Enable **Ironing** for the **Topmost surface only**
-2. Set ironing **Flow rate** to **0%**
-
 ### In Your Model:
 Design your part with a 1-layer-tall extrusion on the topmost surface representing the graphics you want ironed.
 
 <img src="images/model-example.png" alt="Description" width="800">
+
+### In PrusaSlicer:
+1. Enable **Ironing** for the **Topmost surface only**
+2. Set ironing **Flow rate** to **0%**
 
 ### Slicing:
 Slice and print. Note that post-processing effects won't show in the slicer preview.
